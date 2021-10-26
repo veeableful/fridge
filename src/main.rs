@@ -32,9 +32,6 @@ struct SnapshotSubCommand {
     name: String,
     /// Source subvolume to snapshot
     src: String,
-    /// Append date and time after snapshot name
-    #[clap(long("append-date"))]
-    append_date: bool,
     /// Suffix to append at end of full snapshot name 
     suffix: Option<String>,
     /// Dry run
@@ -95,7 +92,6 @@ fn main() {
             opts.snapshot_name = t.name;
             opts.suffix = t.suffix;
             opts.dry_run = t.dry_run;
-            opts.append_date = t.append_date;
             crate::snapshot(opts).unwrap();
         }
         SubCommand::Sync(t) => {

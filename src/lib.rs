@@ -8,7 +8,6 @@ use chrono::Utc;
 pub struct SnapshotOpts {
     pub src: String,
     pub snapshot_name: String,
-    pub append_date: bool,
     pub suffix: Option<String>,
     pub dry_run: bool,
     pub verbose: i32,
@@ -16,20 +15,12 @@ pub struct SnapshotOpts {
 
 // e.g. btrfs sub snap -r [path] [destination]
 pub fn snapshot(opts: SnapshotOpts) -> Result<()> {
-    let snapshot_name = if opts.append_date {
-        let date = Utc::now();
-        let date_str = format!("{}", date.format("%Y-%m-%d_%H:%M:%S"));
-        if let Some(suffix) = opts.suffix {
-            format!("{}@{}{}", &opts.snapshot_name, date_str, suffix)
-        } else {
-            format!("{}@{}", &opts.snapshot_name, date_str)
-        }
+    let date = Utc::now();
+    let date_str = format!("{}", date.format("%Y-%m-%d_%H:%M:%S"));
+    let snapshot_name = if let Some(suffix) = opts.suffix {
+        format!("{}@{}{}", &opts.snapshot_name, date_str, suffix)
     } else {
-        if let Some(suffix) = opts.suffix {
-            format!("{}@{}", opts.snapshot_name, suffix)
-        } else {
-            opts.snapshot_name
-        }
+        format!("{}@{}", &opts.snapshot_name, date_str)
     };
 
     let dst_path = Path::new("/").join(".snapshots").join(&snapshot_name);

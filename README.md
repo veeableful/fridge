@@ -69,7 +69,7 @@ You can copy the resulting binary at `target/release/fridge` into `/usr/local/bi
 Description=Fridge - Daily snapshot (root)
 
 [Service]
-ExecStart=/usr/local/bin/fridge snapshot root / _daily --append-date
+ExecStart=/usr/local/bin/fridge snapshot root / _daily
 Type=oneshot
 
 [Install]
