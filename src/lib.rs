@@ -171,18 +171,18 @@ fn list_snapshots(name: &str, dst: &SyncLocation, verbose: i32) -> Result<Vec<St
             if let Some(user) = dst.user.clone() {
                 let base_url = format!("{}@{}", user, host);
                 if let Some(port) = dst.port {
-                    ("ssh", vec!["-p".to_string(), format!("{}", port), base_url, "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), "-s".to_string(), dst.path.clone()])
+                    ("ssh", vec!["-p".to_string(), format!("{}", port), base_url, "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), dst.path.clone()])
                 } else {
-                    ("ssh", vec![base_url, "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), "-s".to_string(), dst.path.clone()])
+                    ("ssh", vec![base_url, "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), dst.path.clone()])
                 }
             } else {
-                ("ssh", vec![host, "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), "-s".to_string(), dst.path.clone()])
+                ("ssh", vec![host, "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), dst.path.clone()])
             }
         } else {
             bail!("Could not sync remotely without host specified!");
         }
     } else {
-        ("btrfs", vec!["subvolume".to_string(), "list".to_string(), "-s".to_string(), dst.path.clone()])
+        ("btrfs", vec!["subvolume".to_string(), "list".to_string(), dst.path.clone()])
     };
 
     let output = Command::new(program)
