@@ -428,7 +428,6 @@ fn parse_sync_location(url: &str, suffix: &str) -> Result<Location> {
 }
 
 fn list_snapshots(name: &str, dst: &Location, sudo: bool, verbose: i32) -> Result<Vec<Snapshot>> {
-    // List snapshots
     let (program, args) = if dst.is_remote() {
         if let Some(host) = dst.host.clone() {
             if let Some(user) = dst.user.clone() {
@@ -437,7 +436,7 @@ fn list_snapshots(name: &str, dst: &Location, sudo: bool, verbose: i32) -> Resul
                     if sudo {
                         ("ssh", vec!["-p".to_string(), format!("{}", port), base_url, "sudo".to_string(), "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), dst.path.clone()])
                     } else {
-                        ("ssh", vec!["-p".to_string(), format!("{}", port), base_url, "sudo".to_string(), "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), dst.path.clone()])
+                        ("ssh", vec!["-p".to_string(), format!("{}", port), base_url, "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), dst.path.clone()])
                     }
                 } else {
                     if sudo {
