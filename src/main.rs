@@ -8,9 +8,6 @@ struct Opts {
     /// Sets a custom config file. Could have been an Option<T> with no default too
     #[clap(short, long, default_value = "default.conf")]
     config: String,
-    /// A level of verbosity, and can be used multiple times
-    #[clap(short, long, parse(from_occurrences))]
-    verbose: i32,
     #[clap(subcommand)]
     subcmd: SubCommand,
 }
@@ -39,6 +36,9 @@ struct SnapshotSubCommand {
     /// Dry run
     #[clap(short('n'), long("dry-run"))]
     dry_run: bool,
+    /// A level of verbosity, and can be used multiple times
+    #[clap(short, long, parse(from_occurrences))]
+    verbose: i32,
 }
 
 /// A subcommand for sync
@@ -64,6 +64,9 @@ struct SyncSubCommand {
     dst_suffix: String,
     #[clap(short('n'), long("dry-run"))]
     dry_run: bool,
+    /// A level of verbosity, and can be used multiple times
+    #[clap(short, long, parse(from_occurrences))]
+    verbose: i32,
 }
 
 /// A subcommand for restore
@@ -75,7 +78,10 @@ struct RestoreSubCommand {
     dst: String,
     /// Dry run
     #[clap(short('n'), long("dry-run"))]
-    dry_run: bool
+    dry_run: bool,
+    /// A level of verbosity, and can be used multiple times
+    #[clap(short, long, parse(from_occurrences))]
+    verbose: i32,
 }
 
 /// A subcommand for list
@@ -91,17 +97,20 @@ struct ListSubCommand {
     /// Append suffix
     #[clap(long("suffix"), default_value(".snapshots"))]
     suffix: String,
+    /// A level of verbosity, and can be used multiple times
+    #[clap(short, long, parse(from_occurrences))]
+    verbose: i32,
 }
 
 /// A subcommand for run
 #[derive(Parser)]
 struct RunSubCommand {
-    /// Use sudo
-    #[clap(long("sudo"))]
-    sudo: bool,
     /// Dry run
     #[clap(short('n'), long("dry-run"))]
-    dry_run: bool
+    dry_run: bool,
+    /// A level of verbosity, and can be used multiple times
+    #[clap(short, long, parse(from_occurrences))]
+    verbose: i32,
 }
 
 fn main() {
@@ -116,6 +125,7 @@ fn main() {
             opts.name = t.name;
             opts.suffix = t.suffix;
             opts.dry_run = t.dry_run;
+            opts.verbose = t.verbose;
             snapshot(&opts).unwrap();
         }
         SubCommand::Sync(t) => {
@@ -128,6 +138,7 @@ fn main() {
             opts.src_suffix = t.src_suffix;
             opts.dst_suffix = t.dst_suffix;
             opts.dry_run = t.dry_run;
+            opts.verbose = t.verbose;
             sync(&opts).unwrap();
         }
         SubCommand::Restore(t) => {
@@ -139,15 +150,14 @@ fn main() {
                 path: t.path,
                 suffix: t.suffix,
                 sudo: t.sudo,
-                verbose: opts.verbose,
+                verbose: t.verbose,
             };
             list(&sub_opts).unwrap();
         }
         SubCommand::Run(t) => {
             let sub_opts = RunOpts {
-                sudo: t.sudo,
                 dry_run: t.dry_run,
-                verbose: opts.verbose,
+                verbose: t.verbose,
             };
             run(&sub_opts).unwrap();
         }

@@ -1,12 +1,13 @@
 #[macro_use]
 extern crate lazy_static;
 
+use std::net::{SocketAddr,TcpStream};
 use std::path::Path;
 use std::process::{Command,Stdio};
-use std::str;
+use std::str::{self,FromStr};
 use anyhow::{Result, bail};
 use chrono::{DateTime, TimeZone, Utc, Duration};
-use log::{debug,info};
+use log::{debug,info,warn};
 
 pub mod config;
 use config::SnapshotConfig;
@@ -21,7 +22,6 @@ pub struct SnapshotOpts {
     pub verbose: i32,
 }
 
-// e.g. btrfs sub snap -r [path] [destination]
 pub fn snapshot(opts: &SnapshotOpts) -> Result<()> {
     let date = Utc::now();
     let date_str = format!("{}", date.format("%Y-%m-%d_%H:%M:%S"));
@@ -68,12 +68,11 @@ pub struct SyncOpts {
     pub verbose: i32,
 }
 
-// e.g. btrfs send /.snapshots/root@2001-02-03_04:05:06_daily | ssh admin@192.168.50.200 sudo btrfs receive /.snapshots
 pub fn sync(opts: &SyncOpts) -> Result<()> {
     let src = parse_sync_location(&opts.src, &opts.src_suffix)?;
     let dst = parse_sync_location(&opts.dst, &opts.dst_suffix)?;
     let src_list_string = list_snapshots(&opts.name, &src, opts.src_sudo, opts.verbose)?;
-    let dst_list_string = list_snapshots(&opts.name, &dst, opts.src_sudo, opts.verbose)?;
+    let dst_list_string = list_snapshots(&opts.name, &dst, opts.dst_sudo, opts.verbose)?;
     let src_list: Vec<&str> = src_list_string.iter().map(|s| s.full_name.as_str()).collect();
     let dst_list: Vec<&str> = dst_list_string.iter().map(|s| s.full_name.as_str()).collect();
     let diff_list = diff_snapshot_lists(&src_list, &dst_list)?;
@@ -90,7 +89,9 @@ pub fn sync(opts: &SyncOpts) -> Result<()> {
         }
         transfer_opts.snapshot = snapshot.to_string();
         transfer_opts.src = src.clone();
+        transfer_opts.src_sudo = opts.src_sudo;
         transfer_opts.dst = dst.clone();
+        transfer_opts.dst_sudo = opts.dst_sudo;
         transfer_opts.dry_run = opts.dry_run;
         transfer_opts.verbose = opts.verbose;
         transfer(&transfer_opts)?;
@@ -105,7 +106,9 @@ pub struct TransferOpts {
     pub parent_snapshot: Option<String>,
     pub snapshot: String,
     pub src: Location,
+    pub src_sudo: bool,
     pub dst: Location,
+    pub dst_sudo: bool,
     pub dry_run: bool,
     pub verbose: i32,
 }
@@ -121,9 +124,14 @@ pub fn transfer(opts: &TransferOpts) -> Result<()> {
                 info!("Would transfer snapshot {} with parent {}", &snapshot_path, &parent_snapshot_path);
                 return Ok(());
             }
-            eprintln!("Transferring snapshot {} with parent {}", &snapshot_path, &parent_snapshot_path);
-            Command::new("btrfs")
-                .args(["send", "-p", &parent_snapshot_path, &snapshot_path])
+            info!("Transferring snapshot {} with parent {}", &snapshot_path, &parent_snapshot_path);
+            let (program, args) = if opts.src_sudo {
+                ("sudo", vec!["btrfs", "send", "-p", &parent_snapshot_path, &snapshot_path])
+            } else {
+                ("btrfs", vec!["send", "-p", &parent_snapshot_path, &snapshot_path])
+            };
+            Command::new(program)
+                .args(args)
                 .stdout(Stdio::piped())
                 .spawn()?
         } else {
@@ -131,9 +139,14 @@ pub fn transfer(opts: &TransferOpts) -> Result<()> {
                 info!("Would transfer snapshot {}", &snapshot_path);
                 return Ok(());
             }
-            eprintln!("Transferring snapshot {}", &snapshot_path);
-            Command::new("btrfs")
-                .args(["send", &snapshot_path])
+            let (program, args) = if opts.src_sudo {
+                ("sudo", vec!["btrfs", "send", &snapshot_path])
+            } else {
+                ("btrfs", vec!["send", &snapshot_path])
+            };
+            info!("Transferring snapshot {}", &snapshot_path);
+            Command::new(program)
+                .args(args)
                 .stdout(Stdio::piped())
                 .spawn()?
         };
@@ -144,27 +157,43 @@ pub fn transfer(opts: &TransferOpts) -> Result<()> {
                     if let Some(user) = &opts.dst.user {
                         let base_url = format!("{}@{}", user, host);
                         if let Some(port) = opts.dst.port {
-                            ("ssh", vec!["-p".to_string(), format!("{}", port), base_url, "btrfs".to_string(), "receive".to_string(), opts.dst.path.clone()])
+                            if opts.dst_sudo {
+                                ("ssh", vec!["-p".to_string(), format!("{}", port), base_url, "sudo".to_string(), "btrfs".to_string(), "receive".to_string(), opts.dst.path.clone()])
+                            } else {
+                                ("ssh", vec!["-p".to_string(), format!("{}", port), base_url, "btrfs".to_string(), "receive".to_string(), opts.dst.path.clone()])
+                            }
                         } else {
-                            ("ssh", vec![base_url, "btrfs".to_string(), "receive".to_string(), opts.dst.path.clone()])
+                            if opts.dst_sudo {
+                                ("ssh", vec![base_url, "sudo".to_string(), "btrfs".to_string(), "receive".to_string(), opts.dst.path.clone()])
+                            } else {
+                                ("ssh", vec![base_url, "btrfs".to_string(), "receive".to_string(), opts.dst.path.clone()])
+                            }
                         }
                     } else {
-                        ("ssh", vec![host.clone(), "btrfs".to_string(), "receive".to_string(), opts.dst.path.clone()])
+                        if opts.dst_sudo {
+                            ("ssh", vec![host.clone(), "sudo".to_string(), "btrfs".to_string(), "receive".to_string(), opts.dst.path.clone()])
+                        } else {
+                            ("ssh", vec![host.clone(), "btrfs".to_string(), "receive".to_string(), opts.dst.path.clone()])
+                        }
                     }
                 } else {
                     bail!("Could not sync remotely without host specified!");
                 }
             } else {
-                ("btrfs", vec!["receive".to_string(), opts.dst.path.to_string()])
+                if opts.dst_sudo {
+                    ("btrfs", vec!["sudo".to_string(), "receive".to_string(), opts.dst.path.to_string()])
+                } else {
+                    ("btrfs", vec!["receive".to_string(), opts.dst.path.to_string()])
+                }
             };
 
             if opts.dry_run {
-                eprintln!("Would run the following command: {} {}", &program, args.join(" "));
+                info!("Would run the following command: {} {}", &program, args.join(" "));
                 return Ok(());
             }
 
             if opts.verbose > 0 {
-                eprintln!("{} {}", &program, args.join(" "));
+                info!("{} {}", &program, args.join(" "));
             }
 
             let mut receive_output_child = Command::new(program)
@@ -246,13 +275,18 @@ pub fn list(opts: &ListOpts) -> Result<()> {
 }
 
 pub struct RunOpts {
-    pub sudo: bool,
     pub dry_run: bool,
     pub verbose: i32,
 }
 
 pub fn run(opts: &RunOpts) -> Result<()> {
     let cfg = config::load();
+
+    if opts.verbose > 1 {
+        info!("{:?}", &cfg);
+    }
+
+    info!("Running snapshots");
 
     // Run snapshots
     for snapshot_cfg in &cfg.snapshots {
@@ -262,23 +296,37 @@ pub fn run(opts: &RunOpts) -> Result<()> {
             port: None,
             path: format!("{}{}", &cfg.local.path, &cfg.local.suffix),
         };
-        let snapshots = list_snapshots(&snapshot_cfg.name, &snapshot_location, opts.sudo, opts.verbose)?;
-        run_snapshot(snapshot_cfg, &snapshots, "hourly", Duration::hours(1), opts.sudo, opts.dry_run, opts.verbose)?;
-        run_snapshot(snapshot_cfg, &snapshots, "daily", Duration::days(1), opts.sudo, opts.dry_run, opts.verbose)?;
-        run_snapshot(snapshot_cfg, &snapshots, "weekly", Duration::weeks(1), opts.sudo, opts.dry_run, opts.verbose)?;
-        run_snapshot(snapshot_cfg, &snapshots, "monthly", Duration::days(31), opts.sudo, opts.dry_run, opts.verbose)?;
-        run_snapshot(snapshot_cfg, &snapshots, "yearly", Duration::days(365), opts.sudo, opts.dry_run, opts.verbose)?;
+        let sudo = cfg.local.sudo;
+        let snapshots = list_snapshots(&snapshot_cfg.name, &snapshot_location, sudo, opts.verbose)?;
+        run_snapshot(snapshot_cfg, &snapshots, "hourly", Duration::hours(1), sudo, opts.dry_run, opts.verbose)?;
+        run_snapshot(snapshot_cfg, &snapshots, "daily", Duration::days(1), sudo, opts.dry_run, opts.verbose)?;
+        run_snapshot(snapshot_cfg, &snapshots, "weekly", Duration::weeks(1), sudo, opts.dry_run, opts.verbose)?;
+        run_snapshot(snapshot_cfg, &snapshots, "monthly", Duration::days(31), sudo, opts.dry_run, opts.verbose)?;
+        run_snapshot(snapshot_cfg, &snapshots, "yearly", Duration::days(365), sudo, opts.dry_run, opts.verbose)?;
     }
+
+    info!("Running synchronizations");
 
     // Run synchronizations
     for remote_cfg in &cfg.remotes {
+        if let Some(host) = &remote_cfg.host {
+            if let Some(port) = remote_cfg.port {
+                let addr_str = format!("{}:{}", host, port);
+                let addr = SocketAddr::from_str(&addr_str)?;
+                if let Err(e) = TcpStream::connect_timeout(&addr, std::time::Duration::new(10, 0)) {
+                    warn!("Could not connect to {}: {}", &addr, &e);
+                    continue;
+                }
+            }
+        }
+
         for snapshot_cfg in &cfg.snapshots {
             let sync_opts = SyncOpts {
                 name: snapshot_cfg.name.clone(),
-                src: snapshot_cfg.path.clone(),
+                src: cfg.local.path.clone(),
                 src_sudo: cfg.local.sudo,
                 src_suffix: cfg.local.suffix.clone(),
-                dst: remote_cfg.path.clone(),
+                dst: remote_cfg.location_string()?,
                 dst_sudo: remote_cfg.sudo,
                 dst_suffix: remote_cfg.suffix.clone(),
                 dry_run: opts.dry_run,
@@ -288,6 +336,7 @@ pub fn run(opts: &RunOpts) -> Result<()> {
             sync(&sync_opts)?;
         }
     }
+
     Ok(())
 }
 
@@ -328,7 +377,8 @@ fn run_snapshot(cfg: &SnapshotConfig, snapshots: &[Snapshot], suffix: &str, dura
 
     while snapshots.len() > max_snapshot_count {
         if let Some(snapshot) = snapshots.first() {
-            snapshot.delete(opts.sudo, opts.verbose)?;
+            snapshot.delete(sudo, opts.verbose)?;
+            info!("Deleted snapshot {}", &snapshot.full_name);
         }
         snapshots.remove(0);
     }
@@ -363,14 +413,14 @@ impl Snapshot {
 
         let stdout = str::from_utf8(&output.stdout).unwrap();
         if verbose > 0 {
-            eprintln!("{}", stdout);
+            info!("{}", stdout);
         }
 
         Ok(())
     }
 }
 
-#[derive(Default,Clone)]
+#[derive(Clone,Debug,Default)]
 pub struct Location {
     user: Option<String>,
     host: Option<String>,
@@ -429,6 +479,9 @@ fn parse_sync_location(url: &str, suffix: &str) -> Result<Location> {
 
 fn list_snapshots(name: &str, dst: &Location, sudo: bool, verbose: i32) -> Result<Vec<Snapshot>> {
     let (program, args) = if dst.is_remote() {
+        if verbose > 0 {
+            info!("Listing remote snapshots");
+        }
         if let Some(host) = dst.host.clone() {
             if let Some(user) = dst.user.clone() {
                 let base_url = format!("{}@{}", user, host);
@@ -456,12 +509,19 @@ fn list_snapshots(name: &str, dst: &Location, sudo: bool, verbose: i32) -> Resul
             bail!("Could not sync remotely without host specified!");
         }
     } else {
+        if verbose > 0 {
+            info!("Listing local snapshots");
+        }
         if sudo {
             ("sudo", vec!["btrfs".to_string(), "subvolume".to_string(), "list".to_string(), dst.path.clone()])
         } else {
             ("btrfs", vec!["subvolume".to_string(), "list".to_string(), dst.path.clone()])
         }
     };
+
+    if verbose > 0 {
+        info!("{} {}", program, args.join(" "));
+    }
 
     let output = Command::new(program)
         .args(args)
@@ -473,7 +533,7 @@ fn list_snapshots(name: &str, dst: &Location, sudo: bool, verbose: i32) -> Resul
 
     let stdout = str::from_utf8(&output.stdout).unwrap();
     if verbose > 0 {
-        eprintln!("{}", stdout);
+        info!("{}", stdout);
     }
 
     let snapshot_list: Vec<String> = stdout

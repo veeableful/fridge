@@ -1,5 +1,6 @@
 use std::fs;
-use anyhow::Result;
+use anyhow::{Result,bail};
+use log::{info};
 use serde::Deserialize;
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -81,6 +82,24 @@ pub struct RemoteConfig {
 	pub path: String,
 	pub sudo: bool,
 	pub suffix: String,
+}
+
+impl RemoteConfig {
+	pub fn location_string(&self) -> Result<String> {
+		if let Some(user) = &self.user {
+			if let Some(host) = &self.host {
+				if let Some(port) = &self.port {
+					Ok(format!("{}@{}:{}:{}", user, host, port, self.path))
+				} else {
+					Ok(format!("{}@{}:{}", user, host, self.path))
+				}
+			} else {
+				bail!("Could not convert remote config into location string")
+			}
+		} else {
+			Ok(self.path.clone())
+		}
+	}
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -208,10 +227,13 @@ impl From<&RawRemoteConfig> for RemoteConfig {
 }
 
 pub fn load() -> Config {
-	if let Ok(config) = parse_config_at("/etc/fridge/fridge.toml") {
-		config
-	} else {
-		DEFAULT_CONFIG.clone()
+	let path = "/etc/fridge/fridge.toml";
+	match parse_config_at(path) {
+		Ok(config) => config,
+		Err(e) => {
+			info!("Could not load configuration file at {}: {}", path, e);
+			DEFAULT_CONFIG.clone()
+		}
 	}
 }
 
