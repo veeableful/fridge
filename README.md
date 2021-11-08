@@ -4,47 +4,6 @@ Fridge is a command-line tool for taking snapshots on BTRFS and ZFS filesystems 
 
 ## Usage
 
-### Taking snapshots
-
-```
-fridge snapshot <name> <path> [suffix]
-```
-
-e.g.
-```
-fridge snapshot root /
-```
-
-or if suffix is desired
-```
-fridge snapshot root / _manual
-```
-
-### Synchronization
-
-The synchronization will transfer all the snapshots that don't already exist in the destination. The source and destination can be local or remote.
-
-```
-fridge sync <name> <src> <dst>
-```
-
-NOTE:
-`<src>` and `<dst>` refer to the paths that contain snapshots. By default, it automatically appends `.snapshots` to the paths. It can be overridden using `--append-suffix-src=<suffix>` and `--append-suffix-dst=<suffix>`.
-
-e.g.
-
-For local sync:
-```
-# snapshots are at /.snapshots and /media/user/EXT_HDD/.snapshots
-fridge snapshot root / /media/user/EXT_HDD/
-```
-
-For remote sync
-```
-# snapshots are at /.snapshots and admin@192.168.0.2/.snapshots
-fridge snapshot root / remote:admin@192.168.0.2:/
-```
-
 ### Building
 
 If you have installed Rust, you can compile it by running:
@@ -59,63 +18,73 @@ You can copy the resulting binary at `target/release/fridge` into `/usr/local/bi
 
 ### Scheduling
 
-#### For snapshot
+The following is based on how I'm using it now.
 
-1. Set up systemd service at `/etc/systemd/system`
+1. Create configuration file at `/etc/fridge/fridge.toml`.
 
 ```
-# fridge-daily-root.service
+sudo mkdir /etc/fridge
+sudo vim /etc/fridge/fridge.toml
+```
+
+then put content like this (which you mostly like need to change):
+
+```
+[local]
+sudo = true
+path = "/"
+
+[[snapshots]]
+name = "root"
+path = "/"
+hourly = 24
+daily = 7
+weekly = 4
+monthly = 12
+yearly = 3
+
+[[snapshots]]
+name = "home"
+path = "/home"
+hourly = 24
+daily = 7
+weekly = 4
+monthly = 12
+yearly = 3
+
+[[remotes]]
+user = "li"
+host = "192.168.0.2"
+path = "/.snapshots/"
+suffix = "ThinkPad-T495"
+sudo = true
+```
+
+NOTE: You can remove `[[remotes]]` section if you don't want or have remote backup destination.
+NOTE: `sudo` is not needed when the program is run as root (for example, by systemd) but it's convenient to have if you want to run it manually.
+
+2. Set up systemd service at `/etc/systemd/system/fridge.service`
+
+```
 [Unit]
-Description=Fridge - Daily snapshot (root)
+Description=Fridge - Run
 
 [Service]
-ExecStart=/usr/local/bin/fridge snapshot root / _daily
+ExecStart=/usr/local/bin/fridge run
 Type=oneshot
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-2. Set up systemd timer at `/etc/systemd/system`
+3. Set up systemd timer at `/etc/systemd/system/fridge.timer`
 
 ```
-# fridge-daily-root.timer
 [Unit]
-Description=Fridge - Daily snapshot timer (root)
+Description=Fridge - Run
 
 [Timer]
-OnCalendar=*-*-* 12:00:00
-
-[Install]
-WantedBy=timers.target
-```
-
-#### For sync
-
-1. Set up systemd service at `/etc/systemd/system`
-
-```
-# fridge-daily-root-sync.service
-[Unit]
-Description=Fridge - Daily sync (root)
-
-[Service]
-ExecStart=/usr/local/bin/fridge sync root / remote:192.168.50.200:/ThinkPad-T495
-Type=oneshot
-
-[Install]
-WantedBy=multi-user.target
-```
-
-2. Set up systemd timer at `/etc/systemd/system`
-
-```
-# fridge-daily-root-sync.timer
-[Unit]
-Description=Fridge - Daily sync timer (root)
-
-[Timer]
-OnCalendar=*-*-* 12:00:00
+OnCalendar=hourly
 
 [Install]
 WantedBy=timers.target
