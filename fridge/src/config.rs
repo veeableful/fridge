@@ -3,7 +3,7 @@ use anyhow::{Result,bail};
 use log::error;
 use serde::Deserialize;
 
-use crate::SnapshotOpts;
+use crate::{SnapshotOpts, SnapshotRepositoryLocation};
 
 const DEFAULT_HOURLY: usize = 24;
 const DEFAULT_DAILY: usize = 7;
@@ -104,6 +104,15 @@ impl RemoteConfig {
 			}
 		} else {
 			Ok(self.path.clone())
+		}
+	}
+
+	pub fn to_snapshot_repository_location(&self) -> SnapshotRepositoryLocation {
+		SnapshotRepositoryLocation{
+			user: self.user.clone(),
+			host: self.host.clone(),
+			port: self.port.clone(),
+			path: self.path.clone(),
 		}
 	}
 }

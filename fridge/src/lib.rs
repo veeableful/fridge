@@ -75,8 +75,8 @@ pub struct SyncOpts {
 }
 
 pub fn sync(opts: &SyncOpts) -> Result<()> {
-    let src = parse_sync_location(&opts.src, &opts.src_suffix)?;
-    let dst = parse_sync_location(&opts.dst, &opts.dst_suffix)?;
+    let src = parse_snapshot_repository_location(&opts.src, &opts.src_suffix)?;
+    let dst = parse_snapshot_repository_location(&opts.dst, &opts.dst_suffix)?;
     let src_list_string = list_snapshots(&opts.name, &src, opts.src_sudo, opts.verbose)?;
     let dst_list_string = list_snapshots(&opts.name, &dst, opts.dst_sudo, opts.verbose)?;
     let src_list: Vec<&str> = src_list_string.iter().map(|s| s.full_name.as_str()).collect();
@@ -284,11 +284,11 @@ pub struct ListOpts {
 }
 
 pub fn list(opts: &ListOpts) -> Result<()> {
-    let sync_location = parse_sync_location(&opts.path, &opts.suffix).unwrap();
+    let snapshot_repository_location = parse_snapshot_repository_location(&opts.path, &opts.suffix).unwrap();
     if opts.verbose > 0 {
-        debug!("Is remote? {}", sync_location.is_remote());
+        debug!("Is remote? {}", snapshot_repository_location.is_remote());
     }
-    let snapshots = list_snapshots(&opts.name, &sync_location, opts.sudo, opts.verbose)?;
+    let snapshots = list_snapshots(&opts.name, &snapshot_repository_location, opts.sudo, opts.verbose)?;
     for snapshot in &snapshots {
         println!("{}", &snapshot.full_name);
     }
@@ -358,6 +358,41 @@ pub fn run(opts: &RunOpts) -> Result<()> {
         }
     }
 
+    // Clean-up remote snapshots
+    for remote_cfg in &cfg.remotes {
+        if let Some(host) = &remote_cfg.host {
+            if let Some(port) = remote_cfg.port {
+                let addr_str = format!("{}:{}", host, port);
+                let addr = SocketAddr::from_str(&addr_str)?;
+                if let Err(e) = TcpStream::connect_timeout(&addr, std::time::Duration::new(10, 0)) {
+                    warn!("Could not connect to {}: {}", &addr, &e);
+                    continue;
+                }
+            }
+        }
+
+        let repository = remote_cfg.to_snapshot_repository_location();
+        for snapshot_cfg in &cfg.snapshots {
+            let mut snapshots = list_snapshots(&snapshot_cfg.name, &repository, remote_cfg.sudo, opts.verbose)?;
+            let max_snapshot_count = match remote_cfg.suffix.as_str() {
+                "hourly" => snapshot_cfg.hourly,
+                "daily" => snapshot_cfg.daily,
+                "weekly" => snapshot_cfg.weekly,
+                "monthly" => snapshot_cfg.monthly,
+                "yearly" => snapshot_cfg.yearly,
+                _ => 1_000_000,
+            };
+
+            while snapshots.len() > max_snapshot_count {
+                if let Some(snapshot) = snapshots.first() {
+                    snapshot.delete(remote_cfg.sudo, opts.verbose)?;
+                    info!("Deleted remote snapshot {}", &snapshot.full_name);
+                }
+                snapshots.remove(0);
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -393,7 +428,7 @@ fn run_snapshot(cfg: &SnapshotConfig, snapshots: &[Snapshot], suffix: &str, dura
         "weekly" => cfg.weekly,
         "monthly" => cfg.monthly,
         "yearly" => cfg.yearly,
-        _ => 100,
+        _ => 1_000_000,
     };
 
     while snapshots.len() > max_snapshot_count {
@@ -410,18 +445,44 @@ fn run_snapshot(cfg: &SnapshotConfig, snapshots: &[Snapshot], suffix: &str, dura
 pub struct Snapshot {
     pub full_name: String,
     pub name: String,
-    pub path: String,
     pub suffix: String,
     pub datetime: DateTime<Utc>,
+    pub repository: SnapshotRepositoryLocation,
 }
 
 impl Snapshot {
     fn delete(&self, sudo: bool, verbose: i32) -> Result<()> {
-        let path = Path::new(&self.path.clone()).join(&self.full_name).to_str().unwrap().to_string();
-        let (program, args) = if sudo {
-            ("sudo", vec!["btrfs".to_string(), "subvolume".to_string(), "delete".to_string(), path.clone()])
+        let path = Path::new(&self.repository.path.clone()).join(&self.full_name).to_str().unwrap().to_string();
+        let repository = &self.repository;
+        let (program, args) = if let Some(host) = repository.host.clone() {
+            if let Some(user) = repository.user.clone() {
+                let base_url = format!("{}@{}", user, host);
+                if let Some(port) = repository.port {
+                    if sudo {
+                        ("ssh", vec!["-p".to_string(), format!("{}", port), base_url, "sudo".to_string(), "btrfs".to_string(), "subvolume".to_string(), "delete".to_string(), path.clone()])
+                    } else {
+                        ("ssh", vec!["-p".to_string(), format!("{}", port), base_url, "btrfs".to_string(), "subvolume".to_string(), "delete".to_string(), path.clone()])
+                    }
+                } else {
+                    if sudo {
+                        ("ssh", vec![base_url, "sudo".to_string(), "btrfs".to_string(), "subvolume".to_string(), "delete".to_string(), path.clone()])
+                    } else {
+                        ("ssh", vec![base_url, "btrfs".to_string(), "subvolume".to_string(), "delete".to_string(), path.clone()])
+                    }
+                }
+            } else {
+                if sudo {
+                    ("ssh", vec![host, "sudo".to_string(), "btrfs".to_string(), "subvolume".to_string(), "delete".to_string(), path.clone()])
+                } else {
+                    ("ssh", vec![host, "btrfs".to_string(), "subvolume".to_string(), "delete".to_string(), path.clone()])
+                }
+            }
         } else {
-            ("btrfs", vec!["subvolume".to_string(), "delete".to_string(), path.clone()])
+            if sudo {
+                ("sudo", vec!["btrfs".to_string(), "subvolume".to_string(), "delete".to_string(), path.clone()])
+            } else {
+                ("btrfs", vec!["subvolume".to_string(), "delete".to_string(), path.clone()])
+            }
         };
 
         let output = Command::new(program)
@@ -429,7 +490,11 @@ impl Snapshot {
             .output()?;
 
         if !output.status.success() {
-            bail!("Could not delete snapshot at {}: {}", &path, str::from_utf8(&output.stderr).unwrap());
+            if repository.is_remote() {
+                bail!("Could not delete remote snapshot at {}: {}", &path, str::from_utf8(&output.stderr).unwrap());
+            } else {
+                bail!("Could not delete snapshot at {}: {}", &path, str::from_utf8(&output.stderr).unwrap());
+            }
         }
 
         let stdout = str::from_utf8(&output.stdout).unwrap();
@@ -460,72 +525,72 @@ impl SnapshotRepositoryLocation {
 /// It will automatically determine whether the snapshot repository location is remote or local
 /// based on whether or not the URL contains @ character which it assumes to mean there's a user
 /// portion (e.g. user@192.168.0.1).
-fn parse_sync_location(url: &str, suffix: &str) -> Result<SnapshotRepositoryLocation> {
-    let mut sync_location = SnapshotRepositoryLocation::default();
+fn parse_snapshot_repository_location(url: &str, suffix: &str) -> Result<SnapshotRepositoryLocation> {
+    let mut snapshot_repository_location = SnapshotRepositoryLocation::default();
     let tokens: Vec<&str> = url.split("@").collect();
     let is_remote = tokens.len() >= 2;
 
     if is_remote {
-        sync_location.user = Some(tokens[0].to_string());
+        snapshot_repository_location.user = Some(tokens[0].to_string());
 
         let tokens: Vec<&str> = tokens[1].split(":").collect();
         if tokens.len() >= 1 {
-            sync_location.host = Some(tokens[0].to_string());
+            snapshot_repository_location.host = Some(tokens[0].to_string());
         }
         if tokens.len() >= 2 {
             if let Ok(port) = tokens[1].parse::<u16>() {
-                sync_location.port = Some(port);
+                snapshot_repository_location.port = Some(port);
             } else if tokens.len() == 2 {
-                sync_location.port = Some(22);
+                snapshot_repository_location.port = Some(22);
                 if suffix.is_empty() {
-                    sync_location.path = tokens[1].to_string();
+                    snapshot_repository_location.path = tokens[1].to_string();
                 } else {
-                    sync_location.path = Path::new(tokens[1]).join(suffix).to_str().unwrap().to_string();
+                    snapshot_repository_location.path = Path::new(tokens[1]).join(suffix).to_str().unwrap().to_string();
                 }
             }
         }
         if tokens.len() >= 3 {
             if suffix.is_empty() {
-                sync_location.path = tokens[2].to_string();
+                snapshot_repository_location.path = tokens[2].to_string();
             } else {
-                sync_location.path = Path::new(tokens[2]).join(suffix).to_str().unwrap().to_string();
+                snapshot_repository_location.path = Path::new(tokens[2]).join(suffix).to_str().unwrap().to_string();
             }
         }
     } else {
         if suffix.is_empty() {
-            sync_location.path = url.to_string();
+            snapshot_repository_location.path = url.to_string();
         } else {
-            sync_location.path = Path::new(&url).join(suffix).to_str().unwrap().to_string();
+            snapshot_repository_location.path = Path::new(&url).join(suffix).to_str().unwrap().to_string();
         }
     }
 
-    Ok(sync_location)
+    Ok(snapshot_repository_location)
 }
 
-pub fn list_snapshots(name: &str, dst: &SnapshotRepositoryLocation, sudo: bool, verbose: i32) -> Result<Vec<Snapshot>> {
-    let (program, args) = if dst.is_remote() {
+pub fn list_snapshots(name: &str, repository: &SnapshotRepositoryLocation, sudo: bool, verbose: i32) -> Result<Vec<Snapshot>> {
+    let (program, args) = if repository.is_remote() {
         debug!("Listing remote snapshots");
-        if let Some(host) = dst.host.clone() {
-            if let Some(user) = dst.user.clone() {
+        if let Some(host) = repository.host.clone() {
+            if let Some(user) = repository.user.clone() {
                 let base_url = format!("{}@{}", user, host);
-                if let Some(port) = dst.port {
+                if let Some(port) = repository.port {
                     if sudo {
-                        ("ssh", vec!["-p".to_string(), format!("{}", port), base_url, "sudo".to_string(), "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), dst.path.clone()])
+                        ("ssh", vec!["-p".to_string(), format!("{}", port), base_url, "sudo".to_string(), "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), repository.path.clone()])
                     } else {
-                        ("ssh", vec!["-p".to_string(), format!("{}", port), base_url, "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), dst.path.clone()])
+                        ("ssh", vec!["-p".to_string(), format!("{}", port), base_url, "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), repository.path.clone()])
                     }
                 } else {
                     if sudo {
-                        ("ssh", vec![base_url, "sudo".to_string(), "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), dst.path.clone()])
+                        ("ssh", vec![base_url, "sudo".to_string(), "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), repository.path.clone()])
                     } else {
-                        ("ssh", vec![base_url, "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), dst.path.clone()])
+                        ("ssh", vec![base_url, "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), repository.path.clone()])
                     }
                 }
             } else {
                 if sudo {
-                    ("ssh", vec![host, "sudo".to_string(), "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), dst.path.clone()])
+                    ("ssh", vec![host, "sudo".to_string(), "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), repository.path.clone()])
                 } else {
-                    ("ssh", vec![host, "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), dst.path.clone()])
+                    ("ssh", vec![host, "btrfs".to_string(), "subvolume".to_string(), "list".to_string(), repository.path.clone()])
                 }
             }
         } else {
@@ -534,9 +599,9 @@ pub fn list_snapshots(name: &str, dst: &SnapshotRepositoryLocation, sudo: bool, 
     } else {
         debug!("Listing local snapshots");
         if sudo {
-            ("sudo", vec!["btrfs".to_string(), "subvolume".to_string(), "list".to_string(), dst.path.clone()])
+            ("sudo", vec!["btrfs".to_string(), "subvolume".to_string(), "list".to_string(), repository.path.clone()])
         } else {
-            ("btrfs", vec!["subvolume".to_string(), "list".to_string(), dst.path.clone()])
+            ("btrfs", vec!["subvolume".to_string(), "list".to_string(), repository.path.clone()])
         }
     };
 
@@ -568,22 +633,22 @@ pub fn list_snapshots(name: &str, dst: &SnapshotRepositoryLocation, sudo: bool, 
         })
         .collect();
 
-    Ok(parse_snapshot_list(&snapshot_list, &dst.path)?)
+    Ok(parse_snapshot_list(&snapshot_list, repository)?)
 }
 
 /// Parses a list of snapshot name strings into list of Snapshot instances
-fn parse_snapshot_list(snapshot_list: &[String], path: &str) -> Result<Vec<Snapshot>> {
+fn parse_snapshot_list(snapshot_list: &[String], repository: &SnapshotRepositoryLocation) -> Result<Vec<Snapshot>> {
     let mut snapshots = Vec::new();
 
     for snapshot_name in snapshot_list {
-        snapshots.push(parse_snapshot_name(snapshot_name, path)?);
+        snapshots.push(parse_snapshot_name(snapshot_name, repository)?);
     }
 
     Ok(snapshots)
 }
 
 /// Transforms snapshot name string into a Snapshot instance
-fn parse_snapshot_name(snapshot_name: &str, path: &str) -> Result<Snapshot> {
+fn parse_snapshot_name(snapshot_name: &str, repository: &SnapshotRepositoryLocation) -> Result<Snapshot> {
     let mut split = snapshot_name.split("@");
     let name = split.next().ok_or_else(|| FridgeError::ParseSnapshot{what: "name", snapshot: snapshot_name.to_string()})?;
     let datetime_and_suffix = split.next().ok_or_else(|| FridgeError::ParseSnapshot{what: "datetime and suffix", snapshot: snapshot_name.to_string()})?;
@@ -598,9 +663,9 @@ fn parse_snapshot_name(snapshot_name: &str, path: &str) -> Result<Snapshot> {
     Ok(Snapshot{
         full_name: snapshot_name.to_string(),
         name: name.to_string(),
-        path: path.to_string(),
         suffix: suffix.to_string(),
         datetime,
+        repository: repository.clone(),
     })
 }
 
@@ -633,76 +698,76 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_sync_location() {
+    fn test_parse_snapshot_repository_location() {
         {
             let dst = "root@192.168.1.2:22222:/home";
-            let sync_location = super::parse_sync_location(dst, ".snapshots").unwrap();
-            assert_eq!(sync_location.user.as_ref().unwrap(), "root");
-            assert_eq!(sync_location.host.as_ref().unwrap(), "192.168.1.2");
-            assert_eq!(sync_location.port.unwrap(), 22222);
-            assert_eq!(&sync_location.path, "/home/.snapshots");
-            assert_eq!(sync_location.is_remote(), true);
+            let snapshot_repository_location = super::parse_snapshot_repository_location(dst, ".snapshots").unwrap();
+            assert_eq!(snapshot_repository_location.user.as_ref().unwrap(), "root");
+            assert_eq!(snapshot_repository_location.host.as_ref().unwrap(), "192.168.1.2");
+            assert_eq!(snapshot_repository_location.port.unwrap(), 22222);
+            assert_eq!(&snapshot_repository_location.path, "/home/.snapshots");
+            assert_eq!(snapshot_repository_location.is_remote(), true);
         }
         {
             let dst = "root@192.168.1.2:/home";
-            let sync_location = super::parse_sync_location(dst, ".snapshots").unwrap();
-            assert_eq!(sync_location.user.as_ref().unwrap(), "root");
-            assert_eq!(sync_location.host.as_ref().unwrap(), "192.168.1.2");
-            assert_eq!(&sync_location.path, "/home/.snapshots");
-            assert_eq!(sync_location.is_remote(), true);
+            let snapshot_repository_location = super::parse_snapshot_repository_location(dst, ".snapshots").unwrap();
+            assert_eq!(snapshot_repository_location.user.as_ref().unwrap(), "root");
+            assert_eq!(snapshot_repository_location.host.as_ref().unwrap(), "192.168.1.2");
+            assert_eq!(&snapshot_repository_location.path, "/home/.snapshots");
+            assert_eq!(snapshot_repository_location.is_remote(), true);
         }
         {
             let dst = "192.168.1.2:/home";
-            let sync_location = super::parse_sync_location(dst, ".snapshots").unwrap();
-            assert_eq!(&sync_location.path, "192.168.1.2:/home/.snapshots");
-            assert_eq!(sync_location.is_remote(), false);
+            let snapshot_repository_location = super::parse_snapshot_repository_location(dst, ".snapshots").unwrap();
+            assert_eq!(&snapshot_repository_location.path, "192.168.1.2:/home/.snapshots");
+            assert_eq!(snapshot_repository_location.is_remote(), false);
         }
         {
             let dst = "/run/media/EXTERNAL_HDD";
-            let sync_location = super::parse_sync_location(dst, ".snapshots").unwrap();
-            assert_eq!(&sync_location.path, "/run/media/EXTERNAL_HDD/.snapshots");
-            assert_eq!(sync_location.is_remote(), false);
+            let snapshot_repository_location = super::parse_snapshot_repository_location(dst, ".snapshots").unwrap();
+            assert_eq!(&snapshot_repository_location.path, "/run/media/EXTERNAL_HDD/.snapshots");
+            assert_eq!(snapshot_repository_location.is_remote(), false);
         }
         {
             let dst = "backup";
-            let sync_location = super::parse_sync_location(dst, ".snapshots").unwrap();
-            assert_eq!(&sync_location.path, "backup/.snapshots");
-            assert_eq!(sync_location.is_remote(), false);
+            let snapshot_repository_location = super::parse_snapshot_repository_location(dst, ".snapshots").unwrap();
+            assert_eq!(&snapshot_repository_location.path, "backup/.snapshots");
+            assert_eq!(snapshot_repository_location.is_remote(), false);
         }
         {
             let dst = "root@192.168.1.2:22222:/home";
-            let sync_location = super::parse_sync_location(dst, "").unwrap();
-            assert_eq!(sync_location.user.as_ref().unwrap(), "root");
-            assert_eq!(sync_location.host.as_ref().unwrap(), "192.168.1.2");
-            assert_eq!(sync_location.port.unwrap(), 22222);
-            assert_eq!(&sync_location.path, "/home");
-            assert_eq!(sync_location.is_remote(), true);
+            let snapshot_repository_location = super::parse_snapshot_repository_location(dst, "").unwrap();
+            assert_eq!(snapshot_repository_location.user.as_ref().unwrap(), "root");
+            assert_eq!(snapshot_repository_location.host.as_ref().unwrap(), "192.168.1.2");
+            assert_eq!(snapshot_repository_location.port.unwrap(), 22222);
+            assert_eq!(&snapshot_repository_location.path, "/home");
+            assert_eq!(snapshot_repository_location.is_remote(), true);
         }
         {
             let dst = "root@192.168.1.2:/home";
-            let sync_location = super::parse_sync_location(dst, "").unwrap();
-            assert_eq!(sync_location.user.as_ref().unwrap(), "root");
-            assert_eq!(sync_location.host.as_ref().unwrap(), "192.168.1.2");
-            assert_eq!(&sync_location.path, "/home");
-            assert_eq!(sync_location.is_remote(), true);
+            let snapshot_repository_location = super::parse_snapshot_repository_location(dst, "").unwrap();
+            assert_eq!(snapshot_repository_location.user.as_ref().unwrap(), "root");
+            assert_eq!(snapshot_repository_location.host.as_ref().unwrap(), "192.168.1.2");
+            assert_eq!(&snapshot_repository_location.path, "/home");
+            assert_eq!(snapshot_repository_location.is_remote(), true);
         }
         {
             let dst = "192.168.1.2:/home";
-            let sync_location = super::parse_sync_location(dst, "").unwrap();
-            assert_eq!(&sync_location.path, "192.168.1.2:/home");
-            assert_eq!(sync_location.is_remote(), false);
+            let snapshot_repository_location = super::parse_snapshot_repository_location(dst, "").unwrap();
+            assert_eq!(&snapshot_repository_location.path, "192.168.1.2:/home");
+            assert_eq!(snapshot_repository_location.is_remote(), false);
         }
         {
             let dst = "/run/media/EXTERNAL_HDD";
-            let sync_location = super::parse_sync_location(dst, "").unwrap();
-            assert_eq!(&sync_location.path, "/run/media/EXTERNAL_HDD");
-            assert_eq!(sync_location.is_remote(), false);
+            let snapshot_repository_location = super::parse_snapshot_repository_location(dst, "").unwrap();
+            assert_eq!(&snapshot_repository_location.path, "/run/media/EXTERNAL_HDD");
+            assert_eq!(snapshot_repository_location.is_remote(), false);
         }
         {
             let dst = "backup";
-            let sync_location = super::parse_sync_location(dst, "").unwrap();
-            assert_eq!(&sync_location.path, "backup");
-            assert_eq!(sync_location.is_remote(), false);
+            let snapshot_repository_location = super::parse_snapshot_repository_location(dst, "").unwrap();
+            assert_eq!(&snapshot_repository_location.path, "backup");
+            assert_eq!(snapshot_repository_location.is_remote(), false);
         }
     }
 
