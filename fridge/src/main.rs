@@ -1,6 +1,6 @@
 use clap::Parser;
 
-use fridge::{snapshot,sync,restore,list,run,SnapshotOpts,SyncOpts,ListOpts,RunOpts};
+use fridge::{snapshot,sync,restore,list,run,SnapshotOpts,SyncOpts,ListOpts,RunOpts,RestoreOpts};
 
 #[derive(Parser)]
 #[clap(version = "0.0.1", author = "Lilis Iskandar <lilis@veand.co>")]
@@ -142,7 +142,12 @@ fn main() {
             sync(&opts).unwrap();
         }
         SubCommand::Restore(t) => {
-            restore(&t.src, &t.dst, t.dry_run).unwrap();
+            let mut opts = RestoreOpts::default();
+            opts.src = t.src;
+            opts.dst = t.dst;
+            opts.dry_run = t.dry_run;
+            opts.verbose = t.verbose;
+            restore(&opts).unwrap();
         }
         SubCommand::List(t) => {
             let sub_opts = ListOpts {

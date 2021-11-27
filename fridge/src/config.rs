@@ -1,7 +1,15 @@
 use std::fs;
 use anyhow::{Result,bail};
-use log::{info};
+use log::error;
 use serde::Deserialize;
+
+use crate::SnapshotOpts;
+
+const DEFAULT_HOURLY: usize = 24;
+const DEFAULT_DAILY: usize = 7;
+const DEFAULT_WEEKLY: usize = 4;
+const DEFAULT_MONTHLY: usize = 12;
+const DEFAULT_YEARLY: usize = 3;
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Config {
@@ -28,30 +36,20 @@ lazy_static! {
 			SnapshotConfig {
 				name: "root".to_string(),
 				path: "/".to_string(),
-				hourly: 24,
-				daily: 7,
-				weekly: 4,
-				monthly: 12,
-				yearly: 3,
-				sync_hourly: false,
-				sync_daily: true,
-				sync_weekly: false,
-				sync_monthly: false,
-				sync_yearly: false,
+				hourly: DEFAULT_HOURLY,
+				daily: DEFAULT_DAILY,
+				weekly: DEFAULT_WEEKLY,
+				monthly: DEFAULT_MONTHLY,
+				yearly: DEFAULT_YEARLY,
 			},
 			SnapshotConfig {
 				name: "home".to_string(),
 				path: "/home".to_string(),
-				hourly: 0,
-				daily: 7,
-				weekly: 4,
-				monthly: 12,
-				yearly: 0,
-				sync_hourly: false,
-				sync_daily: true,
-				sync_weekly: false,
-				sync_monthly: false,
-				sync_yearly: false,
+				hourly: DEFAULT_HOURLY,
+				daily: DEFAULT_DAILY,
+				weekly: DEFAULT_WEEKLY,
+				monthly: DEFAULT_MONTHLY,
+				yearly: DEFAULT_YEARLY,
 			},
 		],
 		remotes: vec![],
@@ -67,11 +65,19 @@ pub struct SnapshotConfig {
 	pub weekly: usize,
 	pub monthly: usize,
 	pub yearly: usize,
-	pub sync_hourly: bool,
-	pub sync_daily: bool,
-	pub sync_weekly: bool,
-	pub sync_monthly: bool,
-	pub sync_yearly: bool,
+}
+
+impl SnapshotConfig {
+	pub fn to_snapshot_opts(&self, suffix: Option<&str>, sudo: bool, dry_run: bool, verbose: i32) -> SnapshotOpts {
+		SnapshotOpts {
+			src: self.path.clone(),
+			name: self.name.clone(),
+			suffix: suffix.map(|v| v.to_string()),
+			sudo,
+			dry_run,
+			verbose,
+		}
+	}
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Default)]
@@ -112,9 +118,9 @@ struct RawConfig {
 impl From<RawConfig> for Config {
 	fn from(raw: RawConfig) -> Self {
 		Self {
-			local: if let Some(local) = raw.local { local.into() } else { LocalConfig::default() },
-			snapshots: if let Some(snapshots) = raw.snapshots { snapshots.iter().map(|v| SnapshotConfig::from(v)).collect() } else { Vec::new() },
-			remotes: if let Some(remotes) = raw.remotes { remotes.iter().map(|v| RemoteConfig::from(v)).collect() } else { Vec::new() },
+			local: raw.local.map_or(LocalConfig::default(), |local| local.into()),
+			snapshots: raw.snapshots.map_or(Vec::new(), |snapshots| snapshots.iter().map(|v| SnapshotConfig::from(v)).collect()),
+			remotes: raw.remotes.map_or(Vec::new(), |remotes| remotes.iter().map(|v| RemoteConfig::from(v)).collect()),
 		}
 	}
 }
@@ -130,8 +136,8 @@ impl From<RawLocalConfig> for LocalConfig {
 	fn from(raw: RawLocalConfig) -> Self {
 		Self {
 			sudo: raw.sudo,
-			path: if let Some(path) = raw.path { path } else { "/".to_string() },
-			suffix: if let Some(suffix) = raw.suffix { suffix } else { ".snapshots".to_string() },
+			path: raw.path.unwrap_or("/".to_string()),
+			suffix: raw.suffix.unwrap_or(".snapshots".to_string()),
 		}
 	}
 }
@@ -145,11 +151,6 @@ struct RawSnapshotConfig {
 	weekly: Option<usize>,
 	monthly: Option<usize>,
 	yearly: Option<usize>,
-	sync_hourly: Option<bool>,
-	sync_daily: Option<bool>,
-	sync_weekly: Option<bool>,
-	sync_monthly: Option<bool>,
-	sync_yearly: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -167,16 +168,11 @@ impl From<RawSnapshotConfig> for SnapshotConfig {
 		SnapshotConfig{
 			name: raw.name,
 			path: raw.path,
-			hourly: if let Some(hourly) = raw.hourly { hourly } else { 0 },
-			daily: if let Some(daily) = raw.daily { daily } else { 0 },
-			weekly: if let Some(weekly) = raw.weekly { weekly } else { 0 },
-			monthly: if let Some(monthly) = raw.monthly { monthly } else { 0 },
-			yearly: if let Some(yearly) = raw.yearly { yearly } else { 0 },
-			sync_hourly: if let Some(sync_hourly) = raw.sync_hourly { sync_hourly } else { false },
-			sync_daily: if let Some(sync_daily) = raw.sync_daily { sync_daily } else { false },
-			sync_weekly: if let Some(sync_weekly) = raw.sync_weekly { sync_weekly } else { false },
-			sync_monthly: if let Some(sync_monthly) = raw.sync_monthly { sync_monthly } else { false },
-			sync_yearly: if let Some(sync_yearly) = raw.sync_yearly { sync_yearly } else { false },
+			hourly: raw.hourly.unwrap_or(0),
+			daily: raw.daily.unwrap_or(0),
+			weekly: raw.weekly.unwrap_or(0),
+			monthly: raw.monthly.unwrap_or(0),
+			yearly: raw.yearly.unwrap_or(0),
 		}
 	}
 }
@@ -186,16 +182,11 @@ impl From<&RawSnapshotConfig> for SnapshotConfig {
 		SnapshotConfig{
 			name: raw.name.clone(),
 			path: raw.path.clone(),
-			hourly: if let Some(hourly) = raw.hourly { hourly } else { 0 },
-			daily: if let Some(daily) = raw.daily { daily } else { 0 },
-			weekly: if let Some(weekly) = raw.weekly { weekly } else { 0 },
-			monthly: if let Some(monthly) = raw.monthly { monthly } else { 0 },
-			yearly: if let Some(yearly) = raw.yearly { yearly } else { 0 },
-			sync_hourly: if let Some(sync_hourly) = raw.sync_hourly { sync_hourly } else { false },
-			sync_daily: if let Some(sync_daily) = raw.sync_daily { sync_daily } else { false },
-			sync_weekly: if let Some(sync_weekly) = raw.sync_weekly { sync_weekly } else { false },
-			sync_monthly: if let Some(sync_monthly) = raw.sync_monthly { sync_monthly } else { false },
-			sync_yearly: if let Some(sync_yearly) = raw.sync_yearly { sync_yearly } else { false },
+			hourly: raw.hourly.unwrap_or(0),
+			daily: raw.daily.unwrap_or(0),
+			weekly: raw.weekly.unwrap_or(0),
+			monthly: raw.monthly.unwrap_or(0),
+			yearly: raw.yearly.unwrap_or(0),
 		}
 	}
 }
@@ -206,9 +197,9 @@ impl From<RawRemoteConfig> for RemoteConfig {
 			user: raw.user,
 			host: raw.host,
 			port: raw.port,
-			path: if let Some(path) = raw.path { path } else { "/".to_string() },
-			suffix: if let Some(suffix) = raw.suffix { suffix } else { ".snapshots".to_string() },
-			sudo: if let Some(sudo) = raw.sudo { sudo } else { false },
+			path: raw.path.unwrap_or("/".to_string()),
+			suffix: raw.suffix.unwrap_or(".snapshots".to_string()),
+			sudo: raw.sudo.unwrap_or(false),
 		}
 	}
 }
@@ -219,9 +210,9 @@ impl From<&RawRemoteConfig> for RemoteConfig {
 			user: raw.user.clone(),
 			host: raw.host.clone(),
 			port: raw.port,
-			path: if let Some(path) = &raw.path { path.clone() } else { "/".to_string() },
-			suffix: if let Some(suffix) = &raw.suffix { suffix.clone() } else { ".snapshots".to_string() },
-			sudo: if let Some(sudo) = raw.sudo { sudo } else { false },
+			path: raw.path.clone().unwrap_or("/".to_string()),
+			suffix: raw.suffix.clone().unwrap_or(".snapshots".to_string()),
+			sudo: raw.sudo.unwrap_or(false),
 		}
 	}
 }
@@ -231,7 +222,7 @@ pub fn load() -> Config {
 	match parse_config_at(path) {
 		Ok(config) => config,
 		Err(e) => {
-			info!("Could not load configuration file at {}: {}", path, e);
+			error!("Could not load configuration file at {}: {}", path, e);
 			DEFAULT_CONFIG.clone()
 		}
 	}
@@ -260,7 +251,6 @@ daily = 7
 weekly = 4
 monthly = 12
 yearly = 3
-sync_daily = true
 
 [[snapshots]]
 name = "home"
@@ -270,7 +260,6 @@ daily = 7
 weekly = 4
 monthly = 12
 yearly = 0
-sync_daily = true
 
 [[remotes]]
 path = "/run/media/LILIS_5T/.snapshots"
@@ -302,11 +291,6 @@ fn test_parse_config_str() {
 				weekly: Some(4),
 				monthly: Some(12),
 				yearly: Some(3),
-				sync_hourly: None,
-				sync_daily: Some(true),
-				sync_weekly: None,
-				sync_monthly: None,
-				sync_yearly: None,
 			},
 			RawSnapshotConfig {
 				name: "home".to_string(),
@@ -316,11 +300,6 @@ fn test_parse_config_str() {
 				weekly: Some(4),
 				monthly: Some(12),
 				yearly: Some(0),
-				sync_hourly: None,
-				sync_daily: Some(true),
-				sync_weekly: None,
-				sync_monthly: None,
-				sync_yearly: None,
 			},
 		]),
 		remotes: Some(vec![

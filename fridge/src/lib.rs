@@ -8,9 +8,19 @@ use std::str::{self,FromStr};
 use anyhow::{Result, bail};
 use chrono::{DateTime, TimeZone, Utc, Duration};
 use log::{debug,info,warn};
+use thiserror::Error;
 
 pub mod config;
 use config::SnapshotConfig;
+
+#[derive(Error, Debug)]
+pub enum FridgeError {
+    #[error("Could not parse {what:?} in {snapshot:?}")]
+    ParseSnapshot {
+        snapshot: String,
+        what: &'static str,
+    },
+}
 
 #[derive(Default)]
 pub struct SnapshotOpts {
@@ -25,11 +35,7 @@ pub struct SnapshotOpts {
 pub fn snapshot(opts: &SnapshotOpts) -> Result<()> {
     let date = Utc::now();
     let date_str = format!("{}", date.format("%Y-%m-%d_%H:%M:%S"));
-    let full_name = if let Some(suffix) = &opts.suffix {
-        format!("{}@{}_{}", &opts.name, &date_str, suffix)
-    } else {
-        format!("{}@{}_{}", &opts.name, &date_str, "manual")
-    };
+    let full_name = format!("{}@{}_{}", &opts.name, &date_str, opts.suffix.clone().unwrap_or("manual".to_string()));
     let dst_path = Path::new("/").join(".snapshots").join(&full_name);
     let dst = dst_path.to_str().unwrap();
     if opts.dry_run {
@@ -75,18 +81,19 @@ pub fn sync(opts: &SyncOpts) -> Result<()> {
     let dst_list_string = list_snapshots(&opts.name, &dst, opts.dst_sudo, opts.verbose)?;
     let src_list: Vec<&str> = src_list_string.iter().map(|s| s.full_name.as_str()).collect();
     let dst_list: Vec<&str> = dst_list_string.iter().map(|s| s.full_name.as_str()).collect();
-    let diff_list = diff_snapshot_lists(&src_list, &dst_list)?;
-    if diff_list.len() == 0 {
+    let missing_snapshots_in_destination: Vec<&str> = src_list.iter()
+        .filter(|snapshot_name| dst_list.contains(snapshot_name))
+        .map(|snapshot_name| *snapshot_name)
+        .collect();
+    if missing_snapshots_in_destination.len() == 0 {
         info!("Already up-to-date");
         return Ok(());
     }
-    let mut parent: Option<&str> = parent_snapshot_to(diff_list[0], &src_list).unwrap();
+    let mut parent: Option<&str> = find_parent_snapshot_to(missing_snapshots_in_destination[0], &src_list);
 
-    for snapshot in diff_list {
+    for snapshot in missing_snapshots_in_destination {
         let mut transfer_opts = TransferOpts::default();
-        if let Some(parent) = parent {
-            transfer_opts.parent_snapshot = Some(parent.to_string());
-        }
+        transfer_opts.parent_snapshot = parent.map_or(None, |s| Some(s.to_string()));
         transfer_opts.snapshot = snapshot.to_string();
         transfer_opts.src = src.clone();
         transfer_opts.src_sudo = opts.src_sudo;
@@ -105,9 +112,9 @@ pub fn sync(opts: &SyncOpts) -> Result<()> {
 pub struct TransferOpts {
     pub parent_snapshot: Option<String>,
     pub snapshot: String,
-    pub src: Location,
+    pub src: SnapshotRepositoryLocation,
     pub src_sudo: bool,
-    pub dst: Location,
+    pub dst: SnapshotRepositoryLocation,
     pub dst_sudo: bool,
     pub dry_run: bool,
     pub verbose: i32,
@@ -115,7 +122,7 @@ pub struct TransferOpts {
 
 pub fn transfer(opts: &TransferOpts) -> Result<()> {
     if opts.src.is_remote() {
-         
+         unimplemented!()
     } else {
         let snapshot_path = Path::new(&opts.src.path).join(&opts.snapshot).to_str().unwrap().to_string();
         let mut send_output_child = if let Some(parent_snapshot) = &opts.parent_snapshot {
@@ -210,47 +217,58 @@ pub fn transfer(opts: &TransferOpts) -> Result<()> {
     Ok(())
 }
 
-pub fn restore(src: &str, dst: &str, dry_run: bool) -> Result<()> {
-    if dry_run {
-        info!("Would restore snapshot {src} to {dst}", src=src, dst=dst);
+#[derive(Default)]
+pub struct RestoreOpts {
+    pub src: String,
+    pub dst: String,
+    pub name: String,
+    pub suffix: Option<String>,
+    pub sudo: bool,
+    pub dry_run: bool,
+    pub verbose: i32,
+}
+
+pub fn restore(opts: &RestoreOpts) -> Result<()> {
+    if opts.dry_run {
+        info!("Would restore snapshot {} to {}", &opts.src, &opts.dst);
         return Ok(());
     }
 
     // Rename subvolume
-    let dst_old = format!("{}.old", dst);
+    let dst_old = format!("{}.old", &opts.dst);
     let output = Command::new("mv")
-        .args([dst, &dst_old])
+        .args([&opts.dst, &dst_old])
         .output()?;
 
     if !output.status.success() {
-        bail!("Could not restore snapshot: Unable to rename subvolume {}, {}", dst, str::from_utf8(&output.stderr).unwrap());
+        bail!("Could not restore snapshot: Unable to rename subvolume {}, {}", &opts.dst, str::from_utf8(&output.stderr).unwrap());
     }
 
     // Restore snapshot
     let output = Command::new("btrfs")
-        .args(["subvolume", "snapshot", src, dst])
+        .args(["subvolume", "snapshot", &opts.src, &opts.dst])
         .output()?;
 
     if !output.status.success() {
-        bail!("Could not restore snapshot {}: {}", src, str::from_utf8(&output.stderr).unwrap());
+        bail!("Could not restore snapshot {}: {}", &opts.src, str::from_utf8(&output.stderr).unwrap());
     }
 
     // Unmount subvolume
     let output = Command::new("umount")
-        .args([dst])
+        .args([&opts.dst])
         .output()?;
 
     if !output.status.success() {
-        bail!("Could not restore snapshot: Unable to unmount subvolume {}: {}", dst, str::from_utf8(&output.stderr).unwrap());
+        bail!("Could not restore snapshot: Unable to unmount subvolume {}: {}", &opts.dst, str::from_utf8(&output.stderr).unwrap());
     }
 
     // Re-mount subvolume
     let output = Command::new("mount")
-        .args([dst])
+        .args([&opts.dst])
         .output()?;
 
     if !output.status.success() {
-        bail!("Could not restore snapshot: Unable to re-mount subvolume {}: {}", dst, str::from_utf8(&output.stderr).unwrap());
+        bail!("Could not restore snapshot: Unable to re-mount subvolume {}: {}", &opts.dst, str::from_utf8(&output.stderr).unwrap());
     }
 
     Ok(())
@@ -270,7 +288,10 @@ pub fn list(opts: &ListOpts) -> Result<()> {
     if opts.verbose > 0 {
         debug!("Is remote? {}", sync_location.is_remote());
     }
-    list_snapshots(&opts.name, &sync_location, opts.sudo, opts.verbose)?;
+    let snapshots = list_snapshots(&opts.name, &sync_location, opts.sudo, opts.verbose)?;
+    for snapshot in &snapshots {
+        println!("{}", &snapshot.full_name);
+    }
     Ok(())
 }
 
@@ -282,7 +303,7 @@ pub struct RunOpts {
 pub fn run(opts: &RunOpts) -> Result<()> {
     let cfg = config::load();
 
-    if opts.verbose > 1 {
+    if opts.verbose > 0 {
         info!("{:?}", &cfg);
     }
 
@@ -290,7 +311,7 @@ pub fn run(opts: &RunOpts) -> Result<()> {
 
     // Run snapshots
     for snapshot_cfg in &cfg.snapshots {
-        let snapshot_location = Location{
+        let snapshot_location = SnapshotRepositoryLocation{
             user: None,
             host: None,
             port: None,
@@ -421,22 +442,26 @@ impl Snapshot {
 }
 
 #[derive(Clone,Debug,Default)]
-pub struct Location {
+pub struct SnapshotRepositoryLocation {
     user: Option<String>,
     host: Option<String>,
     port: Option<u16>,
     path: String,
 }
 
-impl Location {
+impl SnapshotRepositoryLocation {
     fn is_remote(&self) -> bool {
         self.host.is_some()
     }
 }
 
-
-fn parse_sync_location(url: &str, suffix: &str) -> Result<Location> {
-    let mut sync_location = Location::default();
+/// Parse snapshot repository location URL string into SnapshotRepositoryLocation instance
+///
+/// It will automatically determine whether the snapshot repository location is remote or local
+/// based on whether or not the URL contains @ character which it assumes to mean there's a user
+/// portion (e.g. user@192.168.0.1).
+fn parse_sync_location(url: &str, suffix: &str) -> Result<SnapshotRepositoryLocation> {
+    let mut sync_location = SnapshotRepositoryLocation::default();
     let tokens: Vec<&str> = url.split("@").collect();
     let is_remote = tokens.len() >= 2;
 
@@ -477,11 +502,9 @@ fn parse_sync_location(url: &str, suffix: &str) -> Result<Location> {
     Ok(sync_location)
 }
 
-fn list_snapshots(name: &str, dst: &Location, sudo: bool, verbose: i32) -> Result<Vec<Snapshot>> {
+pub fn list_snapshots(name: &str, dst: &SnapshotRepositoryLocation, sudo: bool, verbose: i32) -> Result<Vec<Snapshot>> {
     let (program, args) = if dst.is_remote() {
-        if verbose > 0 {
-            info!("Listing remote snapshots");
-        }
+        debug!("Listing remote snapshots");
         if let Some(host) = dst.host.clone() {
             if let Some(user) = dst.user.clone() {
                 let base_url = format!("{}@{}", user, host);
@@ -509,9 +532,7 @@ fn list_snapshots(name: &str, dst: &Location, sudo: bool, verbose: i32) -> Resul
             bail!("Could not sync remotely without host specified!");
         }
     } else {
-        if verbose > 0 {
-            info!("Listing local snapshots");
-        }
+        debug!("Listing local snapshots");
         if sudo {
             ("sudo", vec!["btrfs".to_string(), "subvolume".to_string(), "list".to_string(), dst.path.clone()])
         } else {
@@ -520,7 +541,7 @@ fn list_snapshots(name: &str, dst: &Location, sudo: bool, verbose: i32) -> Resul
     };
 
     if verbose > 0 {
-        info!("{} {}", program, args.join(" "));
+        debug!("{} {}", program, args.join(" "));
     }
 
     let output = Command::new(program)
@@ -532,10 +553,6 @@ fn list_snapshots(name: &str, dst: &Location, sudo: bool, verbose: i32) -> Resul
     }
 
     let stdout = str::from_utf8(&output.stdout).unwrap();
-    if verbose > 0 {
-        info!("{}", stdout);
-    }
-
     let snapshot_list: Vec<String> = stdout
         .trim()
         .split("\n")
@@ -551,16 +568,10 @@ fn list_snapshots(name: &str, dst: &Location, sudo: bool, verbose: i32) -> Resul
         })
         .collect();
 
-    if verbose > 0 {
-        info!("There are {} snapshots", snapshot_list.len());
-        for snapshot_entry in &snapshot_list {
-            println!("{}", snapshot_entry);
-        }
-    }
-
     Ok(parse_snapshot_list(&snapshot_list, &dst.path)?)
 }
 
+/// Parses a list of snapshot name strings into list of Snapshot instances
 fn parse_snapshot_list(snapshot_list: &[String], path: &str) -> Result<Vec<Snapshot>> {
     let mut snapshots = Vec::new();
 
@@ -571,39 +582,16 @@ fn parse_snapshot_list(snapshot_list: &[String], path: &str) -> Result<Vec<Snaps
     Ok(snapshots)
 }
 
+/// Transforms snapshot name string into a Snapshot instance
 fn parse_snapshot_name(snapshot_name: &str, path: &str) -> Result<Snapshot> {
     let mut split = snapshot_name.split("@");
-    let name = if let Some(name) = split.next() {
-        name
-    } else {
-        bail!("Could not parse name in snapshot {}", snapshot_name);
-    };
-
-    let datetime_and_suffix = if let Some(datetime_and_suffix) = split.next() {
-        datetime_and_suffix
-    } else {
-        bail!("Could not parse datetime and suffix in snapshot {}", snapshot_name);
-    };
+    let name = split.next().ok_or_else(|| FridgeError::ParseSnapshot{what: "name", snapshot: snapshot_name.to_string()})?;
+    let datetime_and_suffix = split.next().ok_or_else(|| FridgeError::ParseSnapshot{what: "datetime and suffix", snapshot: snapshot_name.to_string()})?;
 
     let mut split = datetime_and_suffix.split("_");
-    let date = if let Some(date) = split.next() {
-        date
-    } else {
-        bail!("Could not parse date snapshot {}", snapshot_name);
-    };
-
-    let time = if let Some(time) = split.next() {
-        time
-    } else {
-        bail!("Could not parse time snapshot {}", snapshot_name);
-    };
-
-    let suffix = if let Some(suffix) = split.next() {
-        suffix
-    } else {
-        bail!("Could not parse suffix in snapshot {}", snapshot_name);
-    };
-
+    let date = split.next().ok_or_else(|| FridgeError::ParseSnapshot{what: "date", snapshot: snapshot_name.to_string()})?;
+    let time = split.next().ok_or_else(|| FridgeError::ParseSnapshot{what: "time", snapshot: snapshot_name.to_string()})?;
+    let suffix = split.next().ok_or_else(|| FridgeError::ParseSnapshot{what: "suffix", snapshot: snapshot_name.to_string()})?;
     let datetime_str = format!("{} {}", date, time);
     let datetime = Utc.datetime_from_str(&datetime_str, "%Y-%m-%d %H:%M:%S")?;
 
@@ -616,21 +604,8 @@ fn parse_snapshot_name(snapshot_name: &str, path: &str) -> Result<Snapshot> {
     })
 }
 
-fn diff_snapshot_lists<'a>(src_list: &[&'a str], dst_list: &[&'a str]) -> Result<Vec<&'a str>> {
-    let mut final_list = Vec::new();
-
-    for entry in src_list {
-        if dst_list.contains(entry) {
-            continue;
-        }
-
-        final_list.push(*entry);
-    }
-
-    Ok(final_list)
-}
-
-fn parent_snapshot_to<'a>(name: &'a str, snapshot_list: &[&'a str]) -> Result<Option<&'a str>> {
+/// Finds parent snapshot to a specific snapshot in a list
+fn find_parent_snapshot_to<'a>(name: &'a str, snapshot_list: &[&'a str]) -> Option<&'a str> {
     let mut p = None;
 
     for entry in snapshot_list {
@@ -640,7 +615,7 @@ fn parent_snapshot_to<'a>(name: &'a str, snapshot_list: &[&'a str]) -> Result<Op
         p = Some(*entry);
     }
 
-    Ok(p)
+    p
 }
 
 #[cfg(test)]
@@ -729,14 +704,6 @@ mod tests {
             assert_eq!(&sync_location.path, "backup");
             assert_eq!(sync_location.is_remote(), false);
         }
-    }
-
-    #[test]
-    fn test_diff_snapshot_lists() {
-        let a = vec!["a", "b"];
-        let b = vec!["a"];
-        let c = super::diff_snapshot_lists(&a, &b).unwrap();
-        assert_eq!(c, vec!["b"]);
     }
 
     #[test]
