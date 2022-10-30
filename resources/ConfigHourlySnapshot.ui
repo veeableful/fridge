@@ -1,0 +1,16 @@
+<interface>
+  <template class="ConfigHourlySnapshot" parent="AdwActionRow">
+    <property name="activatable-widget">switch</property>
+    <property name="use-underline">true</property>
+    <child type="suffix">
+      <object class="GtkSwitch" id="switch">
+        <property name="active" bind-source="ConfigHourlySnapshot" bind-flags="sync-create|bidirectional">false</property>
+        <property name="can-focus">false</property>
+        <property name="halign">end</property>
+        <property name="state" bind-source="ConfigHourlySnapshot" bind-flags="sync-create|bidirectional">false</property>
+        <property name="valign">center</property>
+        <signal name="state_set" handler="on_state_set"/>
+      </object>
+    </child>
+  </template>
+</interface>

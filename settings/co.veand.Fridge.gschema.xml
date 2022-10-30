@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<schemalist>
+  <schema id="co.veand.Fridge" path="/co/veand/Fridge/">
+    <key name="hourly-snapshots" type="b">
+      <default>false</default>
+      <summary>Hourly snapshots</summary>
+    </key>
+    <key name="daily-snapshots" type="b">
+      <default>false</default>
+      <summary>Daily snapshots</summary>
+    </key>
+    <key name="monthly-snapshots" type="b">
+      <default>false</default>
+      <summary>Monthly snapshots</summary>
+    </key>
+    <key name="yearly-snapshots" type="b">
+      <default>false</default>
+      <summary>Yearly snapshots</summary>
+    </key>
+  </schema>
+</schemalist>
+

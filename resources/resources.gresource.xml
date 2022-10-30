@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/co/veand/fridge/">
+    <file compressed="true" preprocess="xml-stripblanks">Window.ui</file>
+    <file compressed="true" preprocess="xml-stripblanks">HeaderBar.ui</file>
+    <file compressed="true" preprocess="xml-stripblanks">PreferencesWindow.ui</file>
+    <file compressed="true" preprocess="xml-stripblanks">ConfigHourlySnapshot.ui</file>
+    <file compressed="true" preprocess="xml-stripblanks">ConfigMaxHourlySnapshots.ui</file>
+    <file compressed="true" preprocess="xml-stripblanks">ConfigRemoteBackup.ui</file>
+    <file compressed="true" preprocess="xml-stripblanks">ConfigRemoteUser.ui</file>
+    <file compressed="true" preprocess="xml-stripblanks">ConfigRemoteHost.ui</file>
+    <file compressed="true" preprocess="xml-stripblanks">ConfigRemoteDirectory.ui</file>
+  </gresource>
+</gresources>
+

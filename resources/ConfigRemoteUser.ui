@@ -1,0 +1,16 @@
+<interface>
+  <template class="ConfigRemoteUser" parent="AdwActionRow">
+    <property name="activatable-widget">entry</property>
+    <property name="use-underline">true</property>
+    <child type="suffix">
+      <object class="GtkEntry" id="entry">
+        <property name="can-focus">true</property>
+        <property name="editable">true</property>
+        <property name="halign">end</property>
+        <property name="text" bind-source="ConfigRemoteUser" bind-flags="sync-create|bidirectional"></property>
+        <property name="valign">center</property>
+        <signal name="changed" handler="on_changed"/>
+      </object>
+    </child>
+  </template>
+</interface>

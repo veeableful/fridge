@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <template class="PreferencesWindow" parent="AdwPreferencesWindow">
+    <property name="default-width">500</property>
+    <property name="default-height">500</property>
+    <property name="search-enabled">false</property>
+    <child>
+      <object class="AdwPreferencesPage">
+        <property name="icon_name">emblem-system-symbolic</property>
+        <property name="title" translatable="yes">General</property>
+        <child>
+          <object class="AdwPreferencesGroup">
+            <property name="title" translatable="yes">Snapshot</property>
+            <child>
+              <object class="ConfigHourlySnapshot" id="hourly_snapshot_schedule">
+                <property name="title" translatable="yes">Hourly</property>
+              </object>
+            </child>
+            <child>
+              <object class="ConfigMaxHourlySnapshots" id="max_hourly_snapshots">
+                <property name="title" translatable="yes">Max hourly snapshots</property>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="AdwPreferencesGroup">
+            <property name="title" translatable="yes">Backup</property>
+            <child>
+              <object class="ConfigRemoteBackup" id="remote_backup">
+                <property name="title" translatable="yes">Remote</property>
+              </object>
+            </child>
+            <child>
+              <object class="ConfigRemoteUser" id="remote_user">
+                <property name="title" translatable="yes">User</property>
+              </object>
+            </child>
+            <child>
+              <object class="ConfigRemoteHost" id="remote_host">
+                <property name="title" translatable="yes">Host</property>
+              </object>
+            </child>
+            <child>
+              <object class="ConfigRemoteDirectory" id="remote_directory">
+                <property name="title" translatable="yes">Directory</property>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+  </template>
+</interface>
+

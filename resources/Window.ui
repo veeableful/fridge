@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Generated with glade 3.38.2 -->
+<interface>
+  <requires lib="gtk+" version="3.12"/>
+  <template class="Window" parent="AdwApplicationWindow">
+    <property name="can-focus">False</property>
+    <property name="default-width">640</property>
+    <property name="default-height">480</property>
+    <property name="title">Fridge</property>
+    <property name="content">
+      <object class="GtkBox">
+        <property name="orientation">vertical</property>
+        <child>
+          <object class="HeaderBar" id="header">
+          </object>
+        </child>
+        <child>
+          <object class="GtkBox">
+            <property name="halign">center</property>
+            <property name="valign">center</property>
+            <property name="vexpand">true</property>
+            <child>
+              <object class="GtkLabel" id="last_snapshot_label">
+                <property name="margin-end">6</property>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="GtkBox">
+            <property name="halign">center</property>
+            <property name="valign">center</property>
+            <property name="vexpand">true</property>
+            <child>
+              <object class="GtkButton" id="snapshot_button">
+                <property name="label">Snapshot</property>
+                <property name="margin-end">6</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkButton" id="backup_button">
+                <property name="label">Backup</property>
+                <property name="margin-end">6</property>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </property>
+  </template>
+</interface>

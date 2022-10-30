@@ -1,4 +1,27 @@
-[workspace]
-members = [
-  "fridge",
-]
+[package]
+name = "fridge"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+chrono = "0.4"
+glib = "0.16"
+gtk = { version = "0.5", package = "gtk4" }
+lazy_static = "1.4"
+log = "0.4"
+once_cell = "1.13"
+pretty_env_logger = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0"
+toml = "0.5"
+zbus = "3.3"
+zbus_polkit = "3.0"
+
+[dependencies.adw]
+package = "libadwaita"
+version = "0.2"
+
+[build-dependencies]
+glib-build-tools = "0.16.0"
+gtk = { version = "0.5", package = "gtk4" }

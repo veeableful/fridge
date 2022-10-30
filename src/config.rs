@@ -1,9 +1,8 @@
 use std::fs;
+
 use anyhow::{Result,bail};
 use log::error;
 use serde::Deserialize;
-
-use crate::{SnapshotOpts, SnapshotRepositoryLocation};
 
 const DEFAULT_HOURLY: usize = 24;
 const DEFAULT_DAILY: usize = 7;
@@ -11,7 +10,9 @@ const DEFAULT_WEEKLY: usize = 4;
 const DEFAULT_MONTHLY: usize = 12;
 const DEFAULT_YEARLY: usize = 3;
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+use crate::fridge::SnapshotOpts;
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Default)]
 pub struct Config {
 	pub local: LocalConfig,
 	pub snapshots: Vec<SnapshotConfig>,
@@ -104,15 +105,6 @@ impl RemoteConfig {
 			}
 		} else {
 			Ok(self.path.clone())
-		}
-	}
-
-	pub fn to_snapshot_repository_location(&self) -> SnapshotRepositoryLocation {
-		SnapshotRepositoryLocation{
-			user: self.user.clone(),
-			host: self.host.clone(),
-			port: self.port.clone(),
-			path: self.path.clone(),
 		}
 	}
 }
